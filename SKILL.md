@@ -1,12 +1,18 @@
 ---
 name: jd-reviews
-description: 抓取京东商品评论并保存到本地 CSV 文件。输入商品 URL，自动处理登录、评论弹层、虚拟滚动等问题，输出 reviews.csv。Use when user wants to scrape JD.com product reviews.
-allowed-tools: Bash(playwright-cli:*) Bash(python3:*) Bash(cat:*) Bash(mkdir:*)
+description: 抓取京东商品评论并保存到本地 CSV 文件。要求用户输入商品 URL 和需要抓取的数量。自动处理登录、评论弹层、虚拟滚动等问题。Use when user wants to scrape JD.com product reviews.
+allowed-tools: Bash(playwright-cli:*) Bash(python3:*) Bash(cat:*) Bash(mkdir:*) Bash(sed:*)
 ---
 
 # 京东商品评论抓取
 
 抓取指定京东商品的评论，保存为本地 CSV 文件。
+
+## 发起询问 (IMPORTANT)
+
+如果用户没有在当前请求中提供商品链接和提取数量，请立即停止执行并询问用户：
+1. 需要抓取的京东商品 URL？
+2. 需要抓取多少条评论？(如果不指定则默认 100)
 
 ## 前置条件
 
@@ -23,21 +29,18 @@ sudo npm install -g @playwright/cli@latest
 
 ```bash
 # --headed 打开可见浏览器窗口，--profile 持久化登录状态
-playwright-cli open --headed --profile=~/.jd-profile "https://passport.jd.com/new/login.aspx"
+# ${JD_URL} 是用户提供的京东链接
+playwright-cli open --headed --profile=~/.jd-profile "${JD_URL}"
 ```
 
-**等待用户在浏览器窗口中完成登录**，登录后告知继续。
-
-登录状态保存在 `~/.jd-profile`，下次直接复用，无需重新登录：
-
-```bash
-playwright-cli open --headed --profile=~/.jd-profile "{JD_URL}"
-```
+**检查登录状态**：如果页面要求登录，请提示**用户在浏览器窗口中完成登录**，登录后告知继续。
+登录状态保存在 `~/.jd-profile`，下次直接复用，无需重新登录。
 
 ### Step 2：导航到商品页并打开评论弹层
 
+如果刚才进行了登录，需要重新导航到指定商品页：
 ```bash
-playwright-cli goto "{JD_URL}"
+playwright-cli goto "${JD_URL}"
 ```
 
 用 snapshot 找"全部评价"按钮的 ref：
@@ -51,7 +54,7 @@ playwright-cli snapshot 2>&1 | grep -i "全部评价"
 点击打开评论弹层：
 
 ```bash
-playwright-cli click e280   # ref 编号以实际 snapshot 为准
+playwright-cli click [替换为搜到的ref]
 ```
 
 截图确认弹层已打开：
@@ -60,19 +63,20 @@ playwright-cli click e280   # ref 编号以实际 snapshot 为准
 playwright-cli screenshot --filename=reviews-dialog.png
 ```
 
-### Step 3：运行收集脚本
+### Step 3：配置并运行收集脚本
 
-京东评论弹层使用**虚拟滚动**（DOM 只渲染可见区域的少量节点），不能一次性提取所有评论，需要边滚动边收集。
+京东评论弹层使用**虚拟滚动**，不能一次性提取所有评论，需要边滚动边收集。
 
+将目标抓取数量写入脚本：
+```bash
+# ${TARGET_COUNT} 是用户要求抓取的数量，默认为 100
+sed -i.bak -e "s/const TARGET = [0-9]*/const TARGET = ${TARGET_COUNT}/" {SKILL_DIR}/scripts/collect_reviews.js
+```
+
+执行脚本：
 ```bash
 playwright-cli run-code --filename={SKILL_DIR}/scripts/collect_reviews.js
 ```
-
-脚本会：
-1. 滚回弹层顶部
-2. 循环滚动，每次提取可见评论，用 Map 去重累积
-3. 收集到 100 条后停止
-4. 结果存入 `window.__reviews__`
 
 ### Step 4：取出数据，生成 CSV
 
@@ -80,27 +84,27 @@ playwright-cli run-code --filename={SKILL_DIR}/scripts/collect_reviews.js
 # 取出收集好的数据
 playwright-cli --raw eval "window.__reviews__" > /tmp/jd_reviews_raw.json
 
-# 生成 CSV
-python3 << 'EOF'
+# 生成 CSV (${TARGET_COUNT} 替换为实际数字)
+python3 << 'PYEOF'
 import json, csv, sys
 
 with open('/tmp/jd_reviews_raw.json') as f:
     content = f.read().strip()
 
-# playwright-cli --raw 输出的是 JSON 字符串，需要两次解析
 try:
     reviews = json.loads(json.loads(content))
 except:
     reviews = json.loads(content)
 
+TARGET_COUNT = ${TARGET_COUNT}
 output = 'reviews.csv'
 with open(output, 'w', newline='', encoding='utf-8-sig') as f:
     writer = csv.DictWriter(f, fieldnames=['user', 'content', 'date', 'spec'])
     writer.writeheader()
-    writer.writerows(reviews[:100])
+    writer.writerows(reviews[:TARGET_COUNT])
 
-print(f"已保存 {len(reviews[:100])} 条评论到 {output}")
-EOF
+print(f"已保存 {len(reviews[:TARGET_COUNT])} 条评论到 {output}")
+PYEOF
 ```
 
 ### Step 5：关闭浏览器
@@ -108,6 +112,12 @@ EOF
 ```bash
 playwright-cli close
 ```
+
+---
+
+## 踩坑记录与解决方案 (不变)
+### 问题1：京东跳转验证/登录页...
+(略，详见历史文档)
 
 ---
 
